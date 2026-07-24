@@ -1,16 +1,18 @@
 """
-HeckNet_Manager.py
-Process manager UI for the HeckNet thermal printer ecosystem.
+Process manager for the printer scripts.
 
-Launches each script as a subprocess, streams its stdout/stderr into a log
-panel, and tracks status with coloured indicator lights:
+A small Tkinter panel that launches each script as a subprocess, streams its
+output into a log pane, and shows status:
 
-  🟢 GREEN  — running, no errors in the last monitoring window
-  🟡 YELLOW — running, but stderr / error-pattern lines detected recently
-  🔴 RED    — not running (stopped, crashed, or never started)
+    green    running, no errors recently
+    yellow   running, but errors seen in the last window
+    red      not running
 
-Usage
-  python HeckNet_Manager.py          (runs from the Desktop by default)
+Each configured folder is scanned at startup and the highest-numbered script
+in it is the one launched, so dropping in a newer file is enough to switch to
+it. Set HECKNET_ROOT to point at the folder holding the script directories.
+
+    python hecknet_manager.py
 """
 
 import tkinter as tk
