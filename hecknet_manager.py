@@ -202,7 +202,6 @@ SCRIPTS = _build_scripts()
 
 ERROR_PATTERNS = [
     re.compile(r"\b(error|exception|traceback|failed|failure|timeout|refused)\b", re.I),
-    re.compile(r"❌"),
     re.compile(r"^\s*File \".*\", line \d+", re.M),
 ]
 
@@ -278,7 +277,7 @@ class ProcessMonitor:
         cmd = exe_and_flags + [script_path]
         if not os.path.exists(script_path):
             self.log_queue.put((
-                f"[MANAGER] ❌  Script not found:\n"
+                f"[MANAGER] ERROR: script not found:\n"
                 f"[MANAGER]    {script_path}\n"
                 f"[MANAGER]    Check folder path and stem in _SCRIPT_DEFS at the top of this file.\n"
                 f"[MANAGER]    Resolution status: {self.cfg.get('resolved', 'unknown')}\n",
@@ -310,7 +309,7 @@ class ProcessMonitor:
                 False
             ))
         except Exception as e:
-            self.log_queue.put((f"[MANAGER] ❌  Failed to start: {e}\n", True))
+            self.log_queue.put((f"[MANAGER] ERROR: failed to start: {e}\n", True))
 
     def stop(self):
         with self._lock:
