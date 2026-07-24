@@ -95,7 +95,10 @@ def resolve_script(folder: str, stem: str) -> tuple:
 # Script definitions
 # folder : directory that holds the script(s)
 
-_BASE = r"C:\path\to\hecknet"
+_BASE = os.environ.get(
+    "HECKNET_ROOT",
+    os.path.dirname(os.path.abspath(__file__)),
+)
 
 _SCRIPT_DEFS = [
     {
