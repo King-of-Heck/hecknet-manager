@@ -7,10 +7,15 @@ output into a log pane, and shows status:
     green    running, no errors recently
     yellow   running, but errors seen in the last window
     red      not running
+    grey     scheduled, waiting for its next run
 
 Each configured folder is scanned at startup and the highest-numbered script
 in it is the one launched, so dropping in a newer file is enough to switch to
 it. Set HECKNET_ROOT to point at the folder holding the script directories.
+
+Scripts with a "schedule" (the Morning and Evening reports) are also started
+at those times while the panel is open; a time that passes while it is
+closed is skipped, not caught up.
 
     python hecknet_manager.py
 """
@@ -92,6 +97,54 @@ def resolve_script(folder: str, stem: str) -> tuple:
     return chosen, f"OK: {os.path.basename(chosen)}"
 
 
+# Scheduling
+# A script with a "schedule" (list of "HH:MM", 24-hour local time) is started
+# at those times while the panel is open. A time that passed while it was
+# closed is skipped, and so is a run more than FIRE_GRACE late.
+
+FIRE_GRACE = timedelta(minutes=5)
+
+def parse_schedule(times: list) -> tuple:
+    """Split schedule entries into (valid "HH:MM" strings, invalid entries)."""
+    valid, invalid = [], []
+    for t in times:
+        try:
+            valid.append(datetime.strptime(t, "%H:%M").strftime("%H:%M"))
+        except (TypeError, ValueError):
+            invalid.append(t)
+    return valid, invalid
+
+def _occurrence(day, hhmm: str) -> datetime:
+    """The datetime of "HH:MM" on the given date."""
+    h, m = (int(x) for x in hhmm.split(":"))
+    return datetime(day.year, day.month, day.day, h, m)
+
+def due_times(prev: datetime, now: datetime, times: list,
+              grace: timedelta = FIRE_GRACE) -> list:
+    """
+    Scheduled times that arrived after *prev* and at or before *now*, and are
+    no more than *grace* old. Both prev's and now's dates are checked, so a
+    tick that crosses midnight still works.
+    """
+    due = []
+    for hhmm in times:
+        for day in sorted({prev.date(), now.date()}):
+            t = _occurrence(day, hhmm)
+            if prev < t <= now and now - t <= grace and hhmm not in due:
+                due.append(hhmm)
+    return due
+
+def next_run(now: datetime, times: list):
+    """The next scheduled datetime strictly after *now*, or None if no schedule."""
+    if not times:
+        return None
+    runs = []
+    for hhmm in times:
+        t = _occurrence(now.date(), hhmm)
+        runs.append(t if t > now else t + timedelta(days=1))
+    return min(runs)
+
+
 # Script definitions
 # folder : directory that holds the script(s)
 
@@ -110,6 +163,7 @@ _SCRIPT_DEFS = [
         "py":     "3.14",
         "exe":    PY314,
         "extra":  [],
+        "schedule": ["08:00"],   # HH:MM, 24-hour local time
     },
     {
         "id":     "evening",
@@ -120,6 +174,7 @@ _SCRIPT_DEFS = [
         "py":     "3.14",
         "exe":    PY314,
         "extra":  [],
+        "schedule": ["22:30"],
     },
     {
         "id":     "nuclear",
@@ -180,6 +235,9 @@ def _build_scripts() -> list:
     for d in _SCRIPT_DEFS:
         path, status = resolve_script(d["folder"], d["stem"])
         print(f"  {d['label']:35s} {status}")
+        schedule, bad = parse_schedule(d.get("schedule", []))
+        for t in bad:
+            print(f"  WARNING: {d['label']}: ignoring schedule entry {t!r} (use HH:MM)")
         # Pull version string out of the resolved filename, e.g.
         # "Morning_Report_1.10.py""v1.10"
         fname_no_ext = os.path.splitext(os.path.basename(path))[0]
@@ -194,6 +252,7 @@ def _build_scripts() -> list:
             "path":     path,
             "resolved": status,
             "version":  ver_str,
+            "schedule": schedule,
         })
     print()
     return scripts
@@ -233,6 +292,7 @@ class ProcessMonitor:
         self.proc        = None
         self.start_time  = None
         self.last_error  = None          # datetime of most recent error line
+        self.last_run_error = False      # last run logged an error (kept after exit)
         self.log_queue   = queue.Queue() # (line_text, is_error)
         self._reader_t   = None
         self._lock       = threading.Lock()
@@ -244,8 +304,10 @@ class ProcessMonitor:
             return self.proc is not None and self.proc.poll() is None
 
     @property
-    def status(self) -> str:   # "stopped" | "error" | "ok"
+    def status(self) -> str:   # "stopped" | "error" | "ok" | "waiting" | "warn_idle"
         if not self.running:
+            if self.cfg.get("schedule"):
+                return "warn_idle" if self.last_run_error else "waiting"
             return "stopped"
         if (self.last_error is not None and
                 (datetime.now() - self.last_error).total_seconds() < ERROR_COOLDOWN):
@@ -283,6 +345,7 @@ class ProcessMonitor:
                 f"[MANAGER]    Resolution status: {self.cfg.get('resolved', 'unknown')}\n",
                 True
             ))
+            self.last_run_error = True
             return
         try:
             with self._lock:
@@ -298,6 +361,7 @@ class ProcessMonitor:
                 )
             self.start_time = datetime.now()
             self.last_error = None
+            self.last_run_error = False
             self._reader_t  = threading.Thread(
                 target=self._read_output, daemon=True
             )
@@ -310,6 +374,7 @@ class ProcessMonitor:
             ))
         except Exception as e:
             self.log_queue.put((f"[MANAGER] ERROR: failed to start: {e}\n", True))
+            self.last_run_error = True
 
     def stop(self):
         with self._lock:
@@ -342,6 +407,7 @@ class ProcessMonitor:
                 is_err = any(p.search(line) for p in ERROR_PATTERNS)
                 if is_err:
                     self.last_error = datetime.now()
+                    self.last_run_error = True
                 self.log_queue.put((line, is_err))
         except Exception:
             pass
@@ -459,13 +525,20 @@ class ScriptCard(tk.Frame):
 
         status = self.monitor.status
         color  = {
-            "ok":      GREEN,
-            "error":   YELLOW,
-            "stopped": RED,
+            "ok":        GREEN,
+            "error":     YELLOW,
+            "stopped":   RED,
+            "waiting":   FG_DIM,
+            "warn_idle": YELLOW,
         }[status]
         self.light.config(fg=color)
 
-        self.uptime_label.config(text=self.monitor.uptime_str)
+        schedule = self.monitor.cfg.get("schedule")
+        if schedule and not self.monitor.running:
+            nxt = next_run(datetime.now(), schedule)
+            self.uptime_label.config(text=f"next {nxt:%H:%M}")
+        else:
+            self.uptime_label.config(text=self.monitor.uptime_str)
 
         running = self.monitor.running
         self.start_btn.config(state="disabled" if running else "normal")
@@ -507,6 +580,7 @@ class HeckNetManager(tk.Tk):
         self._monitors = [ProcessMonitor(cfg) for cfg in SCRIPTS]
         self._cards    = []
         self._build_ui()
+        self._last_tick = datetime.now()   # scheduled times before this never fire
         self._tick()
 
     def _build_ui(self):
@@ -611,6 +685,8 @@ class HeckNetManager(tk.Tk):
 
     def _start_all(self):
         for m in self._monitors:
+            if m.cfg.get("schedule"):
+                continue          # scheduled scripts run at their times, not on START ALL
             if not m.running:
                 threading.Thread(target=m.start, daemon=True).start()
 
@@ -620,18 +696,34 @@ class HeckNetManager(tk.Tk):
                 threading.Thread(target=m.stop, daemon=True).start()
 
 
+    def _run_schedules(self, prev: datetime, now: datetime):
+        """Start any scheduled script whose time arrived between prev and now."""
+        for m in self._monitors:
+            for hhmm in due_times(prev, now, m.cfg.get("schedule", [])):
+                if m.running:
+                    m.log_queue.put((f"[MANAGER] Skipped {hhmm} — already running\n", False))
+                else:
+                    m.log_queue.put((f"[MANAGER] Scheduled run ({hhmm})\n", False))
+                    threading.Thread(target=m.start, daemon=True).start()
+
     def _tick(self):
-        now = datetime.now().strftime("%Y-%m-%d  %H:%M:%S")
+        now_dt = datetime.now()
+        self._run_schedules(self._last_tick, now_dt)
+        self._last_tick = now_dt
+
+        now = now_dt.strftime("%Y-%m-%d  %H:%M:%S")
         self.clock_label.config(text=now)
 
         statuses = [m.status for m in self._monitors]
         n_ok      = statuses.count("ok")
-        n_err     = statuses.count("error")
+        n_err     = statuses.count("error") + statuses.count("warn_idle")
+        n_wait    = statuses.count("waiting")
         n_stopped = statuses.count("stopped")
 
         parts = []
         if n_ok:      parts.append(f"● {n_ok} ok")
         if n_err:     parts.append(f"● {n_err} warn")
+        if n_wait:    parts.append(f"● {n_wait} waiting")
         if n_stopped: parts.append(f"● {n_stopped} stopped")
         self.summary_label.config(text="   ".join(parts) if parts else "")
 

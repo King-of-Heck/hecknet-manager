@@ -10,8 +10,25 @@ launched as a subprocess with its output streamed into a collapsible log pane.
 | green | running, no errors in the recent window |
 | yellow | running, but errors seen recently |
 | red | not running - stopped, crashed, or never started |
+| grey | scheduled, waiting for its next run |
 
 Start, stop and restart are per script, and uptime is shown for each.
+
+## Scheduled scripts
+
+An entry in `_SCRIPT_DEFS` can carry a `"schedule"` list of `"HH:MM"` times
+(24-hour, local). The Morning and Evening reports use it:
+
+    "schedule": ["08:00"],
+
+While the panel is open it starts those scripts at those times. A time that
+passes while the panel is closed, or more than five minutes late (after the PC
+wakes from sleep, say), is skipped rather than caught up. If the script is
+already running when its time comes, that run is skipped and logged.
+
+Scheduled scripts sit grey between runs, showing the next run time, and turn
+yellow if their last run logged an error. START ALL leaves them alone; their
+own START button still runs them immediately.
 
 ## Setup
 
