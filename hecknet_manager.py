@@ -266,6 +266,65 @@ ERROR_PATTERNS = [
 
 ERROR_COOLDOWN = 120
 
+# Persistent logs. The live panel is a view of recent activity, not the record:
+# it is capped, and before 1.3.0 nothing else existed, so at 500 lines a
+# ten-minute poller filled it in about an hour and any fault older than that
+# was simply gone. Every line now also goes to a file per script, appended and
+# never truncated.
+
+LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+
+# Size at which <id>.log is renamed to <id>.log.1 (and the existing parts
+# shuffle up) and a fresh one started. Parts are kept indefinitely: "forever"
+# means nothing is deleted, not that it all lives in one enormous file.
+LOG_ROLLOVER_BYTES = 10 * 1024 * 1024
+
+
+def log_path(script_id: str) -> str:
+    return os.path.join(LOG_DIR, f"{script_id}.log")
+
+
+def rolled_log_paths(script_id: str) -> list:
+    """
+    Every part of this script's log, oldest first.
+
+    Parts are numbered oldest-last (<id>.log is current, .1 is the part before
+    it, and so on), so reading them in order means walking the numbers down
+    and finishing with the live file.
+    """
+    base = log_path(script_id)
+    parts = []
+    n = 1
+    while os.path.exists(f"{base}.{n}"):
+        n += 1
+    for i in range(n - 1, 0, -1):
+        parts.append(f"{base}.{i}")
+    if os.path.exists(base):
+        parts.append(base)
+    return parts
+
+
+def roll_log_if_needed(script_id: str) -> None:
+    """Rename <id>.log to <id>.log.1, shuffling existing parts up first."""
+    base = log_path(script_id)
+    try:
+        if not os.path.exists(base):
+            return
+        if os.path.getsize(base) < LOG_ROLLOVER_BYTES:
+            return
+        n = 1
+        while os.path.exists(f"{base}.{n}"):
+            n += 1
+        # Walk downwards so no rename lands on a file that still exists.
+        for i in range(n - 1, 0, -1):
+            os.replace(f"{base}.{i}", f"{base}.{i + 1}")
+        os.replace(base, f"{base}.1")
+    except OSError:
+        # A log that cannot be rolled is not worth stopping the manager for;
+        # it just keeps growing, and the next attempt may succeed.
+        pass
+
+
 
 BG          = "#0d0d0d"
 BG_PANEL    = "#141414"
@@ -417,15 +476,19 @@ class ProcessMonitor:
 
 
 class ScriptCard(tk.Frame):
-    LOG_MAX_LINES = 500
+    # The panel is only the recent view now; logs/<id>.log is the record, so
+    # this can be generous without being the thing that loses history.
+    LOG_MAX_LINES = 5000
 
     def __init__(self, parent, monitor: ProcessMonitor, **kwargs):
         super().__init__(parent, bg=BG_CARD, relief="flat",
                          highlightthickness=1, highlightbackground=BORDER,
                          **kwargs)
-        self.monitor   = monitor
-        self.log_open  = False
+        self.monitor    = monitor
+        self.log_open   = False
         self._log_lines = 0
+        self._log_fh    = None
+        self._copy_reset_at = None
         self._build()
 
     def _build(self):
@@ -467,11 +530,13 @@ class ScriptCard(tk.Frame):
         self.start_btn   = self._btn(btn_frame, "▶ START",   GREEN,   self.monitor.start)
         self.stop_btn    = self._btn(btn_frame, "■ STOP",    RED,     self.monitor.stop)
         self.restart_btn = self._btn(btn_frame, "↺ RESTART", YELLOW,  self.monitor.restart)
+        self.copy_btn    = self._btn(btn_frame, "⧉ COPY",    FG_DIM,  self._copy_log)
         self.log_btn     = self._btn(btn_frame, "LOG ▾",     FG_DIM,  self._toggle_log)
 
         self.start_btn.pack(side="left", padx=(0, 4))
         self.stop_btn.pack(side="left", padx=(0, 4))
         self.restart_btn.pack(side="left", padx=(0, 4))
+        self.copy_btn.pack(side="left", padx=(0, 4))
         self.log_btn.pack(side="left")
 
         self.log_frame = tk.Frame(self, bg=BG_LOG)
@@ -505,6 +570,86 @@ class ScriptCard(tk.Frame):
             highlightthickness=1, highlightbackground=BORDER,
         )
 
+    def _disk_write(self, line: str) -> None:
+        """
+        Append one line to logs/<id>.log.
+
+        Called from refresh() on the Tk main thread, which is the only writer,
+        so no lock is needed. Failures are swallowed: losing the log is not a
+        reason to take the manager down with it.
+        """
+        script_id = self.monitor.cfg["id"]
+        try:
+            if self._log_fh is None:
+                os.makedirs(LOG_DIR, exist_ok=True)
+                roll_log_if_needed(script_id)
+                self._log_fh = open(log_path(script_id), "a",
+                                    encoding="utf-8", errors="replace")
+            stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self._log_fh.write(f"[{stamp}] {line}")
+            self._log_fh.flush()
+
+            if self._log_fh.tell() >= LOG_ROLLOVER_BYTES:
+                self._log_fh.close()
+                self._log_fh = None          # rolled and reopened on next line
+        except OSError:
+            self._log_fh = None
+
+    def close_log(self) -> None:
+        """
+        Drain anything still queued to disk, then release the file handle.
+
+        The queue is normally drained by refresh() on the UI tick, so on
+        shutdown there can be a tick's worth of lines still in it -- including
+        the last thing a crashing script said, which is the most useful line
+        in the file.
+        """
+        try:
+            while True:
+                line, _is_err = self.monitor.log_queue.get_nowait()
+                self._disk_write(line)
+        except queue.Empty:
+            pass
+
+        if self._log_fh is not None:
+            try:
+                self._log_fh.close()
+            except OSError:
+                pass
+            self._log_fh = None
+
+    def _copy_log(self):
+        """Put the whole on-disk log, every rolled part included, on the clipboard."""
+        script_id = self.monitor.cfg["id"]
+        parts = rolled_log_paths(script_id)
+        if not parts:
+            self._flash_copy("NO LOG")
+            return
+
+        chunks = []
+        for path in parts:
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                    chunks.append(fh.read())
+            except OSError as e:
+                chunks.append(f"[MANAGER] Could not read {path}: {e}\n")
+
+        text = "".join(chunks)
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(text)
+            self.update()               # make the clipboard stick on Windows
+        except tk.TclError:
+            self._flash_copy("FAILED")
+            return
+
+        kb = max(1, len(text) // 1024)
+        self._flash_copy(f"COPIED {kb}KB")
+
+    def _flash_copy(self, label: str):
+        """Show a short confirmation on the COPY button, then put it back."""
+        self.copy_btn.config(text=label, fg=ACCENT)
+        self._copy_reset_at = datetime.now() + timedelta(seconds=2)
     def _toggle_log(self):
         self.log_open = not self.log_open
         if self.log_open:
@@ -540,12 +685,22 @@ class ScriptCard(tk.Frame):
         else:
             self.uptime_label.config(text=self.monitor.uptime_str)
 
+        # Put the COPY button's label back after a confirmation
+        if (self._copy_reset_at is not None and
+                datetime.now() >= self._copy_reset_at):
+            self.copy_btn.config(text="⧉ COPY", fg=FG_DIM)
+            self._copy_reset_at = None
+
         running = self.monitor.running
         self.start_btn.config(state="disabled" if running else "normal")
         self.stop_btn.config(state="normal" if running else "disabled")
         self.restart_btn.config(state="normal" if running else "disabled")
 
     def _append_log(self, line: str, is_err: bool):
+        # Disk first: the file is the record, and it must not depend on the
+        # panel being open or on the widget accepting the write.
+        self._disk_write(line)
+
         self.log_text.config(state="normal")
 
         tag = "err" if is_err else ("mgr" if line.startswith("[MANAGER]") else "norm")
@@ -736,6 +891,12 @@ class HeckNetManager(tk.Tk):
         for m in self._monitors:
             try:
                 m.stop()
+            except Exception:
+                pass
+        # Flush the tail of each log to disk and release the handles.
+        for c in self._cards:
+            try:
+                c.close_log()
             except Exception:
                 pass
         self.destroy()

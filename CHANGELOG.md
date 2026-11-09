@@ -6,6 +6,27 @@ notes below are from each script's own version history.
 
 Only one source file was retained. Its own history documents an initial release and a second version adding version auto-discovery; the published 1.1.0 corresponds to that second version. Files labelled 1.2 through 1.4 were not kept, and no changes for them were ever recorded.
 
+## 1.3.0
+
+Logs are kept permanently on disk. Every line streamed from a script is
+appended to `logs/<id>.log` next to the manager, in addition to the live panel,
+so history survives closing the manager.
+
+The panel is a view of recent activity, not the record. It held 500 lines and
+nothing else existed, which worked out to roughly an hour of a ten-minute
+poller before the earliest lines were discarded, and there was no way to look
+back at a fault once it had scrolled away. Disk lines carry the full date
+rather than just the time, since a file spanning weeks needs it.
+
+A file is rolled over to `<id>.log.1`, `.2`, and so on once it passes
+`LOG_ROLLOVER_BYTES` (10 MB). Parts are never deleted, so nothing is lost; the
+numbering runs oldest-last, matching the usual convention. The panel buffer is
+raised from 500 to 5,000 lines now that the disk file is the real record.
+
+A new COPY button on each card puts the whole on-disk log, every rolled part
+included and oldest first, on the clipboard. The button confirms with a brief
+COPIED and reports the size, so a large paste is not a surprise.
+
 ## 1.2.0
 
 Morning and Evening reports are started by the Manager itself at the times in

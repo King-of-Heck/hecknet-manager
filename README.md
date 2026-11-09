@@ -1,6 +1,6 @@
 # Manager
 
-Tkinter process manager for the HeckNet printer scripts, with per-process log tailing and status lights.
+Tkinter process manager for the HeckNet printer scripts, with per-process log tailing, permanent on-disk logs and status lights.
 
 A Tkinter panel for running the other HeckNet printer scripts. Each one is
 launched as a subprocess with its output streamed into a collapsible log pane.
@@ -13,6 +13,22 @@ launched as a subprocess with its output streamed into a collapsible log pane.
 | grey | scheduled, waiting for its next run |
 
 Start, stop and restart are per script, and uptime is shown for each.
+
+## Logs
+
+Every line a script writes is appended to `logs/<id>.log` next to the manager,
+as well as going to the live panel. The panel is only the recent view: it keeps
+the last 5,000 lines, so for a script that polls every ten minutes the earliest
+of them eventually scroll away. The file is the record, and it survives closing
+the manager.
+
+Lines on disk carry the full date, not just the time, because a file can span
+weeks. Once one passes 10 MB (`LOG_ROLLOVER_BYTES`) it becomes `<id>.log.1`,
+the part that was `.1` becomes `.2`, and so on. Parts are never deleted.
+
+The COPY button puts the whole log for that script on the clipboard, every
+rolled part included and oldest first. It confirms with the size, so you know
+how large a paste you are about to make.
 
 ## Scheduled scripts
 

@@ -9,4 +9,9 @@ gmail_app_password.txt
 # Runtime state
 pending_delays.json
 wnn_last_seen.json
+nuclear_news_seen.json
 receipt_preview*.png
+
+# Persistent script logs, including rolled parts (*.log above misses .log.1)
+logs/
+*.log.*
