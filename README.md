@@ -53,11 +53,21 @@ unset and put this file alongside them.
 
     setx HECKNET_ROOT "C:\path\to\hecknet"
 
-Each entry in `_SCRIPT_DEFS` names a folder and a filename stem. At startup
-the folder is scanned and the highest-numbered file matching that stem is the
-one launched, so dropping in a newer version is enough to switch to it. The
-resolved filename is logged when the script starts, so you can confirm which
-version was picked.
+Each entry in `_SCRIPT_DEFS` names a folder and a filename stem. The folder is
+scanned and the highest-numbered file matching that stem is the one launched,
+so dropping in a newer version is enough to switch to it. The resolved
+filename is logged when the script starts, so you can confirm which version
+was picked.
+
+The scan runs at startup and again every time a script is started, so a file
+deployed while the panel is open is picked up by that script's RESTART — you
+do not have to restart the panel. A change of version is logged; an unchanged
+one is not. If the scan fails, because the folder has gone or a network share
+has blinked, the script stays on the file it is already running.
+
+The panel does not upgrade itself this way. Whatever launches `hecknet_manager.py`
+names one file, so a newer copy of the manager takes effect only once that
+launcher points at it.
 
 Scripts are launched unbuffered so their output appears in the log pane as it
 happens rather than in batches.

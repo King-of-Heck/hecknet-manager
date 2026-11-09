@@ -9,9 +9,11 @@ output into a log pane, and shows status:
     red      not running
     grey     scheduled, waiting for its next run
 
-Each configured folder is scanned at startup and the highest-numbered script
-in it is the one launched, so dropping in a newer file is enough to switch to
-it. Set HECKNET_ROOT to point at the folder holding the script directories.
+Each configured folder is scanned for the highest-numbered script in it, and
+that is the one launched, so dropping in a newer file is enough to switch to
+it. The scan runs at startup and again whenever a script is started, so a file
+deployed under a running panel is picked up by that script's RESTART. Set
+HECKNET_ROOT to point at the folder holding the script directories.
 
 Scripts with a "schedule" (the Morning and Evening reports) are also started
 at those times while the panel is open; a time that passes while it is
@@ -253,6 +255,10 @@ def _build_scripts() -> list:
             "resolved": status,
             "version":  ver_str,
             "schedule": schedule,
+            # Kept so the version can be re-resolved on every start rather
+            # than only here. See ProcessMonitor.resolve().
+            "folder":   d["folder"],
+            "stem":     d["stem"],
         })
     print()
     return scripts
@@ -385,9 +391,66 @@ class ProcessMonitor:
         return f"{m}m {s:02d}s"
 
 
+    def resolve(self) -> bool:
+        """
+        Re-scan this script's folder and adopt the highest-numbered version.
+
+        Called on every start, so dropping a newer file into the folder and
+        pressing RESTART switches to it.  Resolving only once, while the
+        config was built, meant RESTART re-launched the same path and a newer
+        script sat unused until the panel itself was restarted.
+
+        Returns True if the resolved file changed.
+        """
+        folder = self.cfg.get("folder")
+        stem   = self.cfg.get("stem")
+        if not folder or not stem:
+            # Config built by hand or by an older build; nothing to re-resolve.
+            return False
+
+        old_path = self.cfg.get("path")
+        path, status = resolve_script(folder, stem)
+
+        # A failed re-resolve must not take a working card down with it: if
+        # the folder has gone (a network share blinking, say) but the file we
+        # are already on is still there, stay on it.  resolve_script()
+        # otherwise returns an unversioned fallback path that will not exist.
+        if not status.startswith("OK"):
+            if old_path and os.path.exists(old_path):
+                self.log_queue.put((
+                    f"[MANAGER] ⚠  Re-resolve failed, staying on "
+                    f"{os.path.basename(old_path)} — {status}\n",
+                    False
+                ))
+                return False
+            # Nothing usable either way; let start() report the missing file.
+
+        ver_tuple = _parse_version(os.path.basename(path), stem)
+        ver_str   = "v" + ".".join(str(x) for x in ver_tuple) if ver_tuple else "?"
+        old_ver   = self.cfg.get("version", "?")
+
+        self.cfg["cmd"]      = self.cfg["cmd"][:-1] + [path]
+        self.cfg["path"]     = path
+        self.cfg["resolved"] = status
+        self.cfg["version"]  = ver_str
+
+        if path != old_path:
+            # Only a change is worth a line; announcing every restart would
+            # bury the one time it matters.
+            self.log_queue.put((
+                f"[MANAGER] ↑  Version changed {old_ver} → {ver_str} "
+                f"({os.path.basename(path)})\n",
+                False
+            ))
+            return True
+        return False
+
     def start(self):
         if self.running:
             return
+        # Pick up a newer version dropped into the folder since the panel
+        # started, so RESTART is enough to switch to it.
+        self.resolve()
         # Insert -u (unbuffered) immediately before the script path so output
         # streams in real time. Placing it last-before-script works for both:
         raw_cmd     = self.cfg["cmd"]
@@ -508,8 +571,12 @@ class ScriptCard(tk.Frame):
         title_row.pack(anchor="w", fill="x")
         tk.Label(title_row, text=cfg["label"], font=FONT_LABEL,
                  bg=BG_CARD, fg=FG_LABEL, anchor="w").pack(side="left")
-        tk.Label(title_row, text=f"  {cfg.get('version', '?')}",
-                 font=FONT_SMALL, bg=BG_CARD, fg=ACCENT_DIM, anchor="w").pack(side="left", pady=(2,0))
+        # Held rather than discarded: resolve() can change the version while
+        # the panel is running, and refresh() keeps this badge in step.
+        self.version_label = tk.Label(
+            title_row, text=f"  {cfg.get('version', '?')}",
+            font=FONT_SMALL, bg=BG_CARD, fg=ACCENT_DIM, anchor="w")
+        self.version_label.pack(side="left", pady=(2,0))
 
         self.desc_label = tk.Label(info, text=cfg["desc"], font=FONT_SMALL,
                                    bg=BG_CARD, fg=FG_DIM, anchor="w")
@@ -684,6 +751,12 @@ class ScriptCard(tk.Frame):
             self.uptime_label.config(text=f"next {nxt:%H:%M}")
         else:
             self.uptime_label.config(text=self.monitor.uptime_str)
+
+        # Keep the version badge in step: start() re-resolves, so this can
+        # change without the panel being restarted.
+        ver = self.monitor.cfg.get("version", "?")
+        if self.version_label.cget("text").strip() != ver:
+            self.version_label.config(text=f"  {ver}")
 
         # Put the COPY button's label back after a confirmation
         if (self._copy_reset_at is not None and

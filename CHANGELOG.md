@@ -6,6 +6,28 @@ notes below are from each script's own version history.
 
 Only one source file was retained. Its own history documents an initial release and a second version adding version auto-discovery; the published 1.1.0 corresponds to that second version. Files labelled 1.2 through 1.4 were not kept, and no changes for them were ever recorded.
 
+## 1.4.0
+
+Each script's version is re-resolved every time it starts, so dropping a newer
+file into its folder and pressing RESTART switches to it.
+
+The folder scan ran once, while the manager built its config, and the resolved
+path was baked into the card. RESTART re-launched that same path, so a newly
+deployed script sat unused until the manager application itself was restarted —
+which is not where anyone looks. A version that had been in place for twelve
+days was found still unused this way, with the fault it fixed still being
+logged hundreds of times a day.
+
+A version change is announced in the log. An unchanged version is not, since
+every restart now re-resolves and saying so each time would bury the one
+occasion it matters. The version badge on the card is updated to match.
+
+If a re-resolve fails — the folder has gone, a network share has blinked — the
+card stays on the file it is already running rather than adopting the
+unversioned fallback path, which would not exist. Only when there is nothing to
+keep does the fallback go through, so a genuinely missing script is still
+reported.
+
 ## 1.3.0
 
 Logs are kept permanently on disk. Every line streamed from a script is
