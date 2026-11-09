@@ -6,6 +6,30 @@ notes below are from each script's own version history.
 
 Only one source file was retained. Its own history documents an initial release and a second version adding version auto-discovery; the published 1.1.0 corresponds to that second version. Files labelled 1.2 through 1.4 were not kept, and no changes for them were ever recorded.
 
+## 1.5.0
+
+The panel now says which version it is, and no longer leaves a console window
+behind it.
+
+`MANAGER_VERSION` appears in the window title, beside the header and in the
+status bar, and a banner naming it goes into every card's log at startup.
+Nothing recorded this before, so after a deploy the only way to tell one build
+from another was to ask whoever had started it — which is exactly the question
+that came up. The banner prints the running filename next to the constant,
+because the constant is maintained by hand: the two disagreeing is then visible
+rather than quietly wrong.
+
+The startup path scan, which only ever went to stdout, is now also written to
+`logs/manager.log`. That is where the record of which script file each card
+resolved to now lives, and it matters more once there is no console to print to.
+
+Started in a way that gives it a console of its own — double-clicking the file —
+that window is hidden. A console shared with a shell or an editor's build is
+left alone, since hiding it would take the terminal with it, so the test is how
+many processes are attached rather than whether a console exists. Running under
+`pythonw.exe` is handled too: `sys.stdout` and `sys.stderr` are `None` there,
+which `print()` tolerates but a direct write would not.
+
 ## 1.4.1
 
 A line that already begins with its own full date-and-time stamp no longer gets

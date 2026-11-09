@@ -19,6 +19,13 @@ Scripts with a "schedule" (the Morning and Evening reports) are also started
 at those times while the panel is open; a time that passes while it is
 closed is skipped, not caught up.
 
+The panel's own version is in the window title, the header and the status bar,
+and a banner naming it goes into every log at startup along with the startup
+path scan, so a log says which build wrote it.
+
+Started in a way that gives it a console of its own, it hides that window; a
+console shared with a shell or an editor is left alone.
+
     python hecknet_manager.py
 """
 
@@ -32,6 +39,98 @@ import sys
 import queue
 import re
 from datetime import datetime, timedelta
+
+# The panel's own version. A constant rather than something parsed out of the
+# filename, because this file has no version in its name.
+MANAGER_VERSION = "1.5.0"
+
+
+def manager_identity() -> str:
+    """
+    e.g. "HeckNet Manager 1.5.0 (hecknet_manager.py)".
+
+    Both halves on purpose. MANAGER_VERSION is maintained by hand, so printing
+    it alone risks a stale number, and a wrong version in a log is worse than
+    no version at all. The filename is what is actually running, so the two
+    disagreeing is visible instead of misleading.
+    """
+    try:
+        fname = os.path.basename(os.path.abspath(__file__))
+    except NameError:                      # exec'd without a file, e.g. a REPL
+        fname = "?"
+    return f"HeckNet Manager {MANAGER_VERSION} ({fname})"
+
+
+# Under pythonw.exe there is no console and sys.stdout / sys.stderr are None.
+# print() tolerates that -- it returns without writing -- but a direct
+# sys.stdout.write() does not, and a None stream is an easy thing to trip over
+# later. A sink removes the question. The startup notes are kept in a list
+# either way, so what gets recorded never depends on the stream.
+
+class _NullWriter:
+    """Swallows writes. Stands in for a missing sys.stdout / sys.stderr."""
+
+    def write(self, _s) -> int:
+        return 0
+
+    def flush(self) -> None:
+        pass
+
+
+if sys.stdout is None:
+    sys.stdout = _NullWriter()
+if sys.stderr is None:
+    sys.stderr = _NullWriter()
+
+
+def hide_own_console() -> bool:
+    """
+    Hide this process's console window, if the console is ours alone.
+
+    Double-clicking a .py runs python.exe, which creates a console just for
+    this process; that is the window worth getting rid of. Started from a
+    terminal or an editor's build system the console belongs to the shell as
+    well, and hiding it would take the user's terminal with it. So the test is
+    how many processes are attached to the console, not whether one exists.
+
+    Returns True only if a window was actually hidden. Never raises: failing
+    to hide a console is not a reason to refuse to start.
+    """
+    if not sys.platform.startswith("win"):
+        return False
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        hwnd = kernel32.GetConsoleWindow()
+        if not hwnd:
+            return False                   # no console at all (pythonw.exe)
+        buf = (ctypes.c_uint * 8)()
+        attached = kernel32.GetConsoleProcessList(buf, 8)
+        if attached != 1:
+            return False                   # shared with a shell; leave it be
+        ctypes.windll.user32.ShowWindow(hwnd, 0)   # SW_HIDE
+        return True
+    except Exception:
+        return False
+
+
+# The path scan runs at import, before LOG_DIR exists, so the lines are held
+# here and written to logs/manager.log once the window is up. With no console
+# they would otherwise have nowhere to go, and they answer the two questions
+# worth asking later: which build is this, and which script file did each card
+# resolve to.
+
+STARTUP_LINES: list = []
+
+
+def _note(line: str = "") -> None:
+    """Record a startup line, and echo it if anything is listening."""
+    STARTUP_LINES.append(line)
+    try:
+        print(line)
+    except (AttributeError, OSError, UnicodeEncodeError):
+        pass    # no console, or one that cannot spell it; the file has it
+
 
 # DPI AWARENESS — must be called before any tkinter window is created
 # Without this, Windows scales the window up on high-DPI screens and the
@@ -233,13 +332,14 @@ _SCRIPT_DEFS = [
 def _build_scripts() -> list:
     """Resolve versioned paths and build the final SCRIPTS list."""
     scripts = []
-    print("HeckNet Manager — resolving script paths:")
+    _note(manager_identity())
+    _note("Resolving script paths:")
     for d in _SCRIPT_DEFS:
         path, status = resolve_script(d["folder"], d["stem"])
-        print(f"  {d['label']:35s} {status}")
+        _note(f"  {d['label']:35s} {status}")
         schedule, bad = parse_schedule(d.get("schedule", []))
         for t in bad:
-            print(f"  WARNING: {d['label']}: ignoring schedule entry {t!r} (use HH:MM)")
+            _note(f"  WARNING: {d['label']}: ignoring schedule entry {t!r} (use HH:MM)")
         # Pull version string out of the resolved filename, e.g.
         # "Morning_Report_1.10.py""v1.10"
         fname_no_ext = os.path.splitext(os.path.basename(path))[0]
@@ -260,7 +360,7 @@ def _build_scripts() -> list:
             "folder":   d["folder"],
             "stem":     d["stem"],
         })
-    print()
+    _note()
     return scripts
 
 SCRIPTS = _build_scripts()
@@ -294,6 +394,31 @@ OWN_STAMP = re.compile(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]")
 
 def log_path(script_id: str) -> str:
     return os.path.join(LOG_DIR, f"{script_id}.log")
+
+
+def manager_log_path() -> str:
+    """The panel's own log, as opposed to a script's."""
+    return os.path.join(LOG_DIR, "manager.log")
+
+
+def write_startup_log() -> None:
+    """
+    Append the banner and the startup path scan to logs/manager.log.
+
+    Appended, never truncated, so successive runs stack up and it is possible
+    to see when the version last changed. Failures are swallowed: losing the
+    log is not a reason to refuse to start.
+    """
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(manager_log_path(), "a", encoding="utf-8", errors="replace") as fh:
+            fh.write(f"[{stamp}] ===== {manager_identity()} starting =====\n")
+            for line in STARTUP_LINES:
+                if line.strip():
+                    fh.write(f"[{stamp}] {line}\n")
+    except OSError:
+        pass
 
 
 def rolled_log_paths(script_id: str) -> list:
@@ -805,7 +930,7 @@ class HeckNetManager(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("HeckNet System Manager")
+        self.title(f"HeckNet System Manager {MANAGER_VERSION}")
         self.configure(bg=BG)
         self.minsize(720, 400)
         self.geometry("820x620")
@@ -819,6 +944,14 @@ class HeckNetManager(tk.Tk):
         self._monitors = [ProcessMonitor(cfg) for cfg in SCRIPTS]
         self._cards    = []
         self._build_ui()
+
+        # Which build is running, recorded where it will still be legible
+        # weeks later. Nothing used to say, so after a deploy the only way to
+        # tell one build from another was to ask whoever started it.
+        write_startup_log()
+        for card in self._cards:
+            card._append_log(f"[MANAGER] {manager_identity()}\n", False)
+
         self._last_tick = datetime.now()   # scheduled times before this never fire
         self._tick()
 
@@ -833,6 +966,8 @@ class HeckNetManager(tk.Tk):
                  bg=BG, fg=ACCENT).pack(side="left")
         tk.Label(title_line, text=" SYSTEM MANAGER", font=FONT_TITLE,
                  bg=BG, fg=FG_LABEL).pack(side="left")
+        tk.Label(title_line, text=f"  v{MANAGER_VERSION}", font=FONT_SMALL,
+                 bg=BG, fg=ACCENT_DIM).pack(side="left", pady=(6, 0))
 
         self.clock_label = tk.Label(title_line, text="", font=FONT_SMALL,
                                     bg=BG, fg=FG_DIM)
@@ -918,7 +1053,8 @@ class HeckNetManager(tk.Tk):
         )
         self.statusbar_label.pack(side="left")
 
-        tk.Label(statusbar, text=f"Monitoring {len(SCRIPTS)} processes",
+        tk.Label(statusbar,
+                 text=f"v{MANAGER_VERSION} · Monitoring {len(SCRIPTS)} processes",
                  font=FONT_SMALL, bg=BG_PANEL, fg=FG_DIM).pack(side="right")
 
 
@@ -987,6 +1123,9 @@ class HeckNetManager(tk.Tk):
 
 
 if __name__ == "__main__":
+    # Only here, never at import: a test importing this module must not go
+    # hiding the console it is being run from.
+    hide_own_console()
     app = HeckNetManager()
     app.protocol("WM_DELETE_WINDOW", app.on_close)
     app.mainloop()

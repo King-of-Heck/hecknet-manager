@@ -33,6 +33,28 @@ The COPY button puts the whole log for that script on the clipboard, every
 rolled part included and oldest first. It confirms with the size, so you know
 how large a paste you are about to make.
 
+`logs/manager.log` is the panel's own log rather than a script's. Each start
+appends a banner naming the version and the file it is running from, followed
+by the path scan showing which script file every card resolved to. It is only
+ever appended to, so it doubles as a record of when the version last changed.
+
+## Version
+
+`MANAGER_VERSION` is shown in the window title, beside the header and in the
+status bar, and is written into every log at startup. It is maintained by hand,
+so the banner prints the running filename alongside it — if the two disagree,
+that is visible rather than quietly wrong.
+
+## Console window
+
+Started in a way that gives it a console of its own, such as double-clicking
+the file, the panel hides that window. A console it shares with a shell or an
+editor's build is left alone, since hiding it would take the terminal with it;
+the test is how many processes are attached, not whether a console exists.
+
+Running it under `pythonw.exe` works too, which avoids the console being
+created in the first place.
+
 ## Scheduled scripts
 
 An entry in `_SCRIPT_DEFS` can carry a `"schedule"` list of `"HH:MM"` times
