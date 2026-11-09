@@ -6,6 +6,20 @@ notes below are from each script's own version history.
 
 Only one source file was retained. Its own history documents an initial release and a second version adding version auto-discovery; the published 1.1.0 corresponds to that second version. Files labelled 1.2 through 1.4 were not kept, and no changes for them were ever recorded.
 
+## 1.4.1
+
+A line that already begins with its own full date-and-time stamp no longer gets
+a second one added on the way to disk.
+
+The scripts all timestamp their own output, so every line in `logs/<id>.log`
+read `[2026-11-09 14:23:37] [2026-11-09 14:23:37] Polling 45 feeds...`, the two
+stamps differing by up to a second — the script's emit time against the moment
+the UI tick drained the queue.
+
+A time-only stamp still gets the prefix, since supplying the date is the whole
+reason the disk log stamps at all and a file can span weeks. Manager lines,
+which carry no stamp of their own, are unaffected.
+
 ## 1.4.0
 
 Each script's version is re-resolved every time it starts, so dropping a newer

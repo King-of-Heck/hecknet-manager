@@ -23,8 +23,11 @@ of them eventually scroll away. The file is the record, and it survives closing
 the manager.
 
 Lines on disk carry the full date, not just the time, because a file can span
-weeks. Once one passes 10 MB (`LOG_ROLLOVER_BYTES`) it becomes `<id>.log.1`,
-the part that was `.1` becomes `.2`, and so on. Parts are never deleted.
+weeks. A line that already begins with a full date-and-time stamp of its own
+is left as it is rather than stamped twice; a time-only stamp still gets the
+prefix, since the date is the point. Once a file passes 10 MB
+(`LOG_ROLLOVER_BYTES`) it becomes `<id>.log.1`, the part that was `.1` becomes
+`.2`, and so on. Parts are never deleted.
 
 The COPY button puts the whole log for that script on the clipboard, every
 rolled part included and oldest first. It confirms with the size, so you know

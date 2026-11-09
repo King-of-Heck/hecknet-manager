@@ -285,6 +285,12 @@ LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 # means nothing is deleted, not that it all lives in one enormous file.
 LOG_ROLLOVER_BYTES = 10 * 1024 * 1024
 
+# A line already carrying a full date-and-time stamp needs no second one.
+# Deliberately anchored and full-width: a time-only stamp like [14:23:37]
+# does NOT match, because supplying the date is the whole reason the disk log
+# stamps at all, and a file that spans weeks needs it.
+OWN_STAMP = re.compile(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]")
+
 
 def log_path(script_id: str) -> str:
     return os.path.join(LOG_DIR, f"{script_id}.log")
@@ -652,8 +658,13 @@ class ScriptCard(tk.Frame):
                 roll_log_if_needed(script_id)
                 self._log_fh = open(log_path(script_id), "a",
                                     encoding="utf-8", errors="replace")
-            stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self._log_fh.write(f"[{stamp}] {line}")
+            if OWN_STAMP.match(line):
+                # The script stamped it; a second stamp only adds width and
+                # an off-by-a-tick discrepancy.
+                self._log_fh.write(line)
+            else:
+                stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                self._log_fh.write(f"[{stamp}] {line}")
             self._log_fh.flush()
 
             if self._log_fh.tell() >= LOG_ROLLOVER_BYTES:
