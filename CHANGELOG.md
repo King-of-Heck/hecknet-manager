@@ -6,6 +6,14 @@ notes below are from each script's own version history.
 
 Only one source file was retained. Its own history documents an initial release and a second version adding version auto-discovery; the published 1.1.0 corresponds to that second version. Files labelled 1.2 through 1.4 were not kept, and no changes for them were ever recorded.
 
+## 1.5.1
+
+The Nuclear News card described itself as a "53-feed" monitor. It has had 45
+feeds since Nuclear News 1.6.0 dropped its dead Toronto Star URLs. The count is
+gone rather than corrected: it is set in a different file from the one that
+changes it, so any number here would go stale the next time a feed is added or
+dropped.
+
 ## 1.5.0
 
 The panel now says which version it is, and no longer leaves a console window

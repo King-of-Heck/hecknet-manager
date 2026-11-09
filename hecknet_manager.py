@@ -42,7 +42,7 @@ from datetime import datetime, timedelta
 
 # The panel's own version. A constant rather than something parsed out of the
 # filename, because this file has no version in its name.
-MANAGER_VERSION = "1.5.0"
+MANAGER_VERSION = "1.5.1"
 
 
 def manager_identity() -> str:
@@ -280,7 +280,7 @@ _SCRIPT_DEFS = [
     {
         "id":     "nuclear",
         "label":  "Nuclear News Dispatch",
-        "desc":   "53-feed nuclear news monitor (10 min poll)",
+        "desc":   "Nuclear industry news monitor (10 min poll)",
         "folder": os.path.join(_BASE, "Nuclear News"),
         "stem":   "Nuclear_News_",
         "py":     "3.14",
